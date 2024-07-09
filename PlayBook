@@ -1,0 +1,156 @@
+
+########################################################
+#Here we see main play which calls the required roles.
+########################################################
+pouria@vm1:~# cat preparing/play.yaml
+- hosts: sre
+  gather_facts: true
+  become: yes
+  serial: 1
+  roles:
+- name: preparing
+
+########################################################
+#Here is the node exporter's file which is used in ansible playbook
+########################################################
+pouria@vm1:~# cat preparing/files/nodeexporter.service
+[Unit]
+Description=Node Exporter
+Documentation=https://prometheus.io/docs/guides/node-exporter/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+Restart=on-failure
+ExecStart=/usr/local/bin/node_exporter \
+  --web.listen-address=:9200
+
+[Install]
+WantedBy=multi-user.target
+
+########################################################
+# Here  is the long lsit of the playbook
+########################################################
+---
+- hosts: all
+  become: true
+  vars:
+    position: sre
+  handlers:
+    - name: reload ssh service
+      service:
+        name: sshd
+        state: restarted
+  tasks:
+    - name: update apt
+      ansible.builtin.apt:
+        autoremove: yes
+        autoclean: yes
+        upgrade: safe
+
+
+    - name: set hostname
+      ansible.builtin.hostname:
+        name:  "{{ inventory_hostname }}"
+
+    - name:  change ssh port
+      ansible.builtin.lineinfile:
+        path: /tmp/sre
+        line: 'Port 8080 '
+        regex: '^#Port 22'
+      tags: ssh
+      notify: reload ssh service
+
+
+    - name: download node exporter tar file
+      get_url:
+        url: https://github.com/prometheus/node_exporter/releases/download/v1.8.1/node_exporter-1.8.1.linux-amd64.tar.gz
+        dest: /tmp/nodeexporter.rar
+        checksum: sha256:fbadb376afa7c883f87f70795700a8a200f7fd45412532cc1938a24d41078011
+      tags: download
+
+
+    - name: create group
+      ansible.builtin.group:
+        name: nodeexporter
+        state: present
+      tags: creategroup
+
+    - name: create node_exporter user and add it to the group
+      ansible.builtin.user:
+        name: nodeexporter
+        state: present
+        shell: /bin/false
+        create_home: no
+        groups: nodeexporter
+        append: yes
+      tags: createuser
+
+    - name: create directory for node exporter binary
+      file:
+        path: /etc/nodeexporter
+        state: directory
+        mode: 0755
+        owner: nodeexporter
+        group: nodeexporter
+      tags: createdir
+
+    - name: untar  nodeexporter tar file to it's folder
+      unarchive:
+        src: /tmp/nodeexporter.rar
+        dest: /opt/
+      tags: untar
+
+    - name: copy nodexporter to local bin
+      ansible.builtin.copy:
+        src: /opt/node_exporter-1.8.1.linux-amd64/node_exporter
+        dest: /usr/local/bin/
+        owner: nodeexporter
+        group: nodeexporter
+        mode: 0777
+      tags: copyfiletobin
+
+
+#note" service file already exists in files directory or can be in templates with j2 extension
+
+    - name: copy service file to systemd path
+      ansible.builtin.copy:
+        src: /root/preparing/files/nodeexporter.service
+        dest: /usr/lib/systemd/system/node_exporter.service
+        mode: u=rx,g=rx,o=rx
+        owner: nodeexporter
+        group: nodeexporter
+      tags: copyservicefile
+
+
+
+
+
+    - name: restart systemd daemonm
+      systemd:
+        state: restarted
+        daemon_reload: true
+        name: node_exporter
+      tags: reloadandenable
+
+
+
+
+#lots of hardening procedures are done by setting kernel parametes , here is a sample.
+    - name: change sysctl to disdable ipv4 forwarding which is usually unnecessary in general usecases
+	
+	
+      ansible.posix.sysctl:
+        sysctl_file: /etc/sysctl.conf
+        name: net.ipv4.ip_forward
+        value: '0'
+        sysctl_set: true
+      tags: sysctl
+
+
+
+
+
